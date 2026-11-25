@@ -1,4 +1,4 @@
-// Token Launch Radar — dashboard for model "radar-2".
+// Token Launch Radar — dashboard for model "radar-3".
 // Reads window.RADAR (written beside dashboard/ by main.ts) and renders: the ranked board with
 // search, category / chain / verdict filters and sortable columns; a detail view per protocol
 // with the valuation's working, the launch propensity and the farm plan; a Live tokens view of
@@ -159,8 +159,8 @@
 
     app.innerHTML = header('board') +
       '<div class="modelstrip">The model in one line: each protocol is priced off its <b>' + DATA.fit.comp_count + ' nearest tokenised ' +
-      'peers</b> (by TVL, same category preferred) — the weighted geometric mean of their market-cap/TVL multiples — ' +
-      'then seven-day growth and maturity adjustments. Held out on the peers themselves, its median error is ' +
+      'peers</b> (by TVL, same category preferred) — their market caps scaled by the TVL ratio to the power 0.92, ' +
+      'with far-out comp multiples trimmed — then seven-day growth and maturity adjustments. Held out on the peers themselves, its median error is ' +
       '<b>×' + DATA.validation.fold_error + '</b>. <a href="#/model">Full model &amp; validation</a></div>' +
       controls + '<table><thead>' + thead + '</thead><tbody>' + body + '</tbody></table>' + footer();
     app.setAttribute('aria-busy', 'false');
@@ -237,7 +237,7 @@
       '<div class="card"><h3>Launch propensity</h3>' +
       '<div class="oddsbig">' + Math.round(r.launch_odds * 100) + '%</div>' +
       '<p class="note">Of the ' + DATA.odds_validation.census + ' protocols in the census, ' + DATA.odds_validation.tokenised + ' already carry a token. ' +
-      'A logistic fit on size and age — cross-validated Brier ' + DATA.odds_validation.brier_cv + ' against ' + DATA.odds_validation.brier_base_rate +
+      'A logistic fit on size, age, chain count, momentum and the category\u2019s own token rate — cross-validated Brier ' + DATA.odds_validation.brier_cv + ' against ' + DATA.odds_validation.brier_base_rate +
       ' for the base rate — puts a protocol with this record at ' + Math.round(r.launch_odds * 100) + '%. It is a statement about ' +
       'look-alikes in this snapshot, not a dated prediction.</p>' +
       kv('Season verdict', r.verdict) + kv('Cash cost of one season', fmtUsd(r.season_cost_usd)) + '</div>' +
@@ -275,8 +275,10 @@
       '<div class="grid"><div class="card"><h3>Implied value</h3>' +
       '<p class="note">Market cap per TVL dollar is dispersed across DeFi — in this snapshot the middle 80% of tokenised ' +
       'peers span a factor of 230 — so the model prices by comparable peers, not by one multiple. For each protocol it takes ' +
-      'the ' + DATA.fit.comp_count + ' peers nearest in log₁₀ TVL (distance halved when the category matches), winsorises their ' +
-      'market-cap/TVL multiples to the peer set\u2019s 5th–95th percentile, and applies the kernel-weighted geometric mean. ' +
+      'the ' + DATA.fit.comp_count + ' peers nearest in log₁₀ TVL (a fixed penalty added when the category differs), drops any ' +
+      'comp whose multiple sits more than 1.5 log₁₀ from the selected set\u2019s weighted median, and reads the value off the ' +
+      'comps\u2019 own market caps, scaled by the TVL ratio raised to 0.92 rather than 1 — across the snapshot, market cap ' +
+      'grows a little slower than TVL. ' +
       'Growth (seven-day TVL change, clamped to −60%…+120%, weight 0.5) and maturity (0.6 + 0.4 × age/3y, unknown age read ' +
       'as one year) adjust the base. Peers with a zero recorded market cap price nothing and are excluded (' + v.peer_count +
       ' of the tokenised protocols remain). No name is special-cased: one function prices every row, and each row shows ' +
@@ -287,8 +289,9 @@
       kv('Validation', v.folds + '-fold cross-validation, folds by slug hash') + '</div>' +
       '<div class="card"><h3>Launch propensity</h3>' +
       '<p class="note">The outcome is known for all ' + ov.census + ' protocols in the census: ' + ov.tokenised + ' carry a token, ' +
-      (ov.census - ov.tokenised) + ' record none. A logistic regression on standardised log₁₀ TVL and age is fitted to that ' +
-      'outcome; a pre-token protocol\u2019s score is the fitted share of look-alikes that already carry a token. It separates ' +
+      (ov.census - ov.tokenised) + ' record none. A logistic regression on standardised log₁₀ TVL, age, chain count, seven-day ' +
+      'momentum and the protocol\u2019s category base rate (the smoothed share of its category that already carries a token) is ' +
+      'fitted to that outcome; a pre-token protocol\u2019s score is the fitted share of look-alikes that already carry a token. It separates ' +
       'the board\u2019s rows from the merely large: size alone is not a launch signal, and the fit says how much of it is.</p>' +
       kv('Cross-validated Brier score', String(ov.brier_cv)) +
       kv('Base-rate Brier score', String(ov.brier_base_rate)) +

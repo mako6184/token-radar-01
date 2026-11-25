@@ -21,8 +21,8 @@ body {
   color: var(--ink);
   font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
-.skip { position: absolute; left: -9999px; }
-.skip:focus { left: 8px; top: 8px; background: var(--accent); color: var(--accent-ink); padding: 6px 10px; }
+a.skip { position: absolute; left: -9999px; }
+a.skip:focus { left: 8px; top: 8px; background: var(--accent); color: var(--accent-ink); padding: 6px 10px; }
 main { max-width: 1240px; margin: 0 auto; padding: 22px 20px 40px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -81,7 +81,7 @@ tbody tr:hover { background: var(--panel2); }
 .chip.farm-first { background: var(--accent); color: var(--accent-ink); }
 .chip.farm-cheap { background: #14532d; color: #b7f4c9; }
 .chip.watch { background: #4a380f; color: var(--amber); }
-.chip.skip { background: var(--panel2); color: var(--faint); }
+.chip.skip { background: #42262b; color: #eda9b1; }
 .tag { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11px; color: var(--dim); margin-left: 6px; }
 .tag.warn { color: var(--amber); border-color: #4a380f; }
 
