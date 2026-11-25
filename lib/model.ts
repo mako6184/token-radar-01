@@ -1,4 +1,4 @@
-// Token Launch Radar — model "radar-2".
+// Token Launch Radar — model "radar-3".
 //
 // One sealed DefiLlama snapshot in, one ranked board out. Everything below is derived from the
 // snapshot's own ten fields per protocol; no protocol name is ever special-cased and no figure
@@ -14,12 +14,15 @@
 // from comparable tokenised peers ("comps") in the same snapshot. Market cap per TVL dollar is
 // wildly dispersed across DeFi (in this snapshot the middle 80% of peers span a factor of 230),
 // so no single multiple is honest. For each protocol the model takes the 24 peers nearest to it
-// — distance is the gap in log10 TVL, halved when the category matches — and reads off the
-// kernel-weighted geometric mean of their market-cap/TVL multiples, winsorised to the peer
-// set's 5th–95th percentile. The weighted quartiles of the same comps give a range, and the
-// dashboard shows the range beside the point value:
+// — distance is the gap in log10 TVL, with a fixed penalty of 0.5 log units added in quadrature
+// when the category differs — drops any comp whose multiple sits more than 1.5 log10 from the
+// selected set's weighted median (a local trim against one wild peer pricing the whole row),
+// and reads the value off the comps' own market caps, scaled by the TVL ratio raised to 0.92
+// rather than 1: across the snapshot, market cap grows a little slower than TVL, and the
+// cross-validation below prefers the softer exponent. The weighted quartiles of the comp
+// multiples give a range, and the dashboard shows the range beside the point value:
 //
-//   base       = tvl * weightedGeometricMean(comp multiples)
+//   base       = geometricMean(comp market caps) * (tvl / geometricMean(comp TVLs)) ^ 0.92
 //   range      = tvl * [weighted 25th, 75th percentile of comp multiples]
 //   growthMult = 1 + clamp(change_7d, -60, 120) / 100 * 0.5      (seven-day TVL momentum)
 //   maturityMult = 0.6 + min(age_days, 1095) / 1095 * 0.4        (unknown age: 365 days)
@@ -35,12 +38,15 @@
 //
 // Launch propensity — a second, separate model — is a logistic regression over all 758
 // protocols in the census. The outcome is observable for every one of them: the protocol
-// already carries a token, or it records none. Features are log10(TVL) and age in years,
-// standardised. For a pre-token protocol the fitted probability reads as: of the protocols
-// that look like this one (this size, this age), the share that already carry a token. It is
-// a cross-sectional propensity, not a dated prediction, and the dashboard says so. Its
-// five-fold cross-validated Brier score is published next to the base-rate Brier score of
-// guessing the census rate for everyone.
+// already carries a token, or it records none. Features are log10(TVL), age in years, the
+// chain count, seven-day TVL momentum and the protocol's own category base rate (the share
+// of its category that already carries a token, smoothed toward the census rate), all
+// standardised, with a light L2 pull on the weights. The category rate is the feature that
+// earns its place: categories differ enormously in how tokenised they already are. For a
+// pre-token protocol the fitted probability reads as: of the protocols that look like this
+// one, the share that already carry a token. It is a cross-sectional propensity, not a dated
+// prediction, and the dashboard says so. Its five-fold cross-validated Brier score is
+// published next to the base-rate Brier score of guessing the census rate for everyone.
 //
 // Farm plans are generated per protocol from its own record: the core action follows its
 // category, the capital tier follows its TVL, gas follows its first chain, the holding
@@ -72,7 +78,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the dashboard's Live view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -145,7 +151,9 @@ export function isRankable(p: SnapshotProtocol): boolean {
 
 const COMP_COUNT = 24;
 const COMP_KERNEL = 1.25;
-const COMP_CATEGORY_BOOST = 0.5;
+const COMP_CATEGORY_PENALTY = 0.5;
+const COMP_TRIM = 1.5;
+const COMP_POWER = 0.92;
 
 /** One tokenised peer in comp form: its log10 TVL, category and log10 market-cap/TVL multiple. */
 export interface CompPeer {
@@ -155,7 +163,7 @@ export interface CompPeer {
   log_multiple: number;
 }
 
-/** The comp set: the usable peers plus the winsor bounds for their multiples. */
+/** The comp set: the usable peers plus the observed bounds for their multiples. */
 export interface PeerFit {
   peers: CompPeer[];
   peer_count: number;
@@ -181,7 +189,7 @@ export function fitPeers(peers: SnapshotProtocol[]): PeerFit {
     log_multiple: Math.log10(p.mcap_usd! / p.tvl_usd),
   }));
   const mults = comps.map((c) => c.log_multiple).sort((a, b) => a - b);
-  return { peers: comps, peer_count: comps.length, mult_lo: quantile(mults, 0.05), mult_hi: quantile(mults, 0.95) };
+  return { peers: comps, peer_count: comps.length, mult_lo: quantile(mults, 0), mult_hi: quantile(mults, 1) };
 }
 
 /** A weighted quantile of values, weights aligned by index. */
@@ -206,20 +214,33 @@ export function compEstimate(
   const logTvl = Math.log10(Math.max(1, tvl));
   const dist = (c: CompPeer): number => {
     const d = Math.abs(c.log_tvl - logTvl);
-    return c.category === category ? d * COMP_CATEGORY_BOOST : d;
+    return c.category === category ? d : Math.sqrt(d * d + COMP_CATEGORY_PENALTY * COMP_CATEGORY_PENALTY);
   };
   const near = fit.peers
     .filter((c) => c.slug !== excludeSlug)
     .sort((a, b) => dist(a) - dist(b) || (a.slug < b.slug ? -1 : 1))
     .slice(0, COMP_COUNT);
-  const weights = near.map((c) => Math.exp(-(dist(c) ** 2) / (2 * COMP_KERNEL * COMP_KERNEL)));
-  const wsum = weights.reduce((s, w) => s + w, 0) || 1;
+  const rawWeights = near.map((c) => Math.exp(-(dist(c) ** 2) / (2 * COMP_KERNEL * COMP_KERNEL)));
   const clamped = near.map((c) => clamp(c.log_multiple, fit.mult_lo, fit.mult_hi));
-  const mean = clamped.reduce((s, v, i) => s + v * weights[i]!, 0) / wsum;
+  // Local trim: a comp whose multiple is far from the selected set's own weighted median
+  // prices nothing about this protocol; it keeps its place in the range but not in the point.
+  const centre = weightedQuantile(clamped, rawWeights, 0.5);
+  let weights = rawWeights.map((w, i) => (Math.abs(clamped[i]! - centre) > COMP_TRIM ? 0 : w));
+  if (weights.every((w) => w === 0)) weights = rawWeights;
+  const wsum = weights.reduce((s, w) => s + w, 0) || 1;
+  // The point estimate reads off the comps' market caps directly, with the TVL ratio taken
+  // to COMP_POWER: mean log market cap, shifted by the powered gap in log TVL.
+  let meanLogMcap = 0;
+  let meanLogTvl = 0;
+  clamped.forEach((v, i) => {
+    meanLogMcap += (weights[i]! * (near[i]!.log_tvl + v)) / wsum;
+    meanLogTvl += (weights[i]! * near[i]!.log_tvl) / wsum;
+  });
+  const mean = meanLogMcap + COMP_POWER * (logTvl - meanLogTvl) - logTvl;
   return {
     multiple: Math.pow(10, mean),
-    mult_lo: Math.pow(10, weightedQuantile(clamped, weights, 0.25)),
-    mult_hi: Math.pow(10, weightedQuantile(clamped, weights, 0.75)),
+    mult_lo: Math.pow(10, weightedQuantile(clamped, rawWeights, 0.25)),
+    mult_hi: Math.pow(10, weightedQuantile(clamped, rawWeights, 0.75)),
     comp_count: near.length,
   };
 }
@@ -298,59 +319,87 @@ export function validatePeers(peers: SnapshotProtocol[], asOf: string): Validati
 /* The launch-propensity fit                                           */
 /* ------------------------------------------------------------------ */
 
-/** The fitted logistic propensity: weights over standardised [log10 tvl, age years]. */
+/** The fitted logistic propensity: weights over the standardised features, plus the category base-rate table it was fit with. */
 export interface OddsFit {
-  weights: [number, number, number];
-  mean: [number, number];
-  sd: [number, number];
+  weights: number[];
+  mean: number[];
+  sd: number[];
   base_rate: number;
+  cat_rate: Map<string, number>;
 }
 
-function oddsFeatures(p: SnapshotProtocol, asOf: string): [number, number] {
+/** How hard the category base rates are smoothed toward the census rate: (tokens + A * base) / (count + A). */
+const CAT_RATE_SMOOTHING = 15;
+/** The L2 pull on the propensity weights, applied per example in the gradient. */
+const ODDS_L2 = 20;
+
+/** The category base rates of a protocol set: each category's tokenised share, smoothed toward the set's own rate. */
+function categoryRates(protocols: SnapshotProtocol[]): { rates: Map<string, number>; base: number } {
+  const base = protocols.reduce((s, p) => s + (hasToken(p) ? 1 : 0), 0) / protocols.length;
+  const counts = new Map<string, [number, number]>();
+  for (const p of protocols) {
+    const key = p.category ?? '';
+    const [tokens, count] = counts.get(key) ?? [0, 0];
+    counts.set(key, [tokens + (hasToken(p) ? 1 : 0), count + 1]);
+  }
+  const rates = new Map<string, number>();
+  for (const [key, [tokens, count]] of counts) {
+    rates.set(key, (tokens + CAT_RATE_SMOOTHING * base) / (count + CAT_RATE_SMOOTHING));
+  }
+  return { rates, base };
+}
+
+function oddsFeatures(p: SnapshotProtocol, asOf: string, catRate: Map<string, number>, base: number): number[] {
   const age = ageDays(asOf, p.listed_at);
   const years = (age ?? UNKNOWN_AGE_DAYS) / 365;
-  return [Math.log10(Math.max(1, p.tvl_usd)), Math.min(years, 6)];
+  return [
+    Math.log10(Math.max(1, p.tvl_usd)),
+    Math.min(years, 6),
+    Math.log10(1 + p.chains.length),
+    clamp(finite(p.change_7d, 0), -100, 300) / 100,
+    catRate.get(p.category ?? '') ?? base,
+  ];
 }
 
 const sigmoid = (z: number): number => 1 / (1 + Math.exp(-clamp(z, -30, 30)));
 
 /** Logistic regression by full-batch gradient descent: fixed rate and steps, so runs agree byte for byte. */
 export function fitOdds(protocols: SnapshotProtocol[], asOf: string): OddsFit {
-  const feats = protocols.map((p) => oddsFeatures(p, asOf));
+  const { rates, base } = categoryRates(protocols);
+  const feats = protocols.map((p) => oddsFeatures(p, asOf, rates, base));
   const y = protocols.map((p) => (hasToken(p) ? 1 : 0));
   const n = protocols.length;
-  const mean: [number, number] = [
-    feats.reduce((s, f) => s + f[0], 0) / n,
-    feats.reduce((s, f) => s + f[1], 0) / n,
-  ];
-  const sd: [number, number] = [
-    Math.sqrt(feats.reduce((s, f) => s + (f[0] - mean[0]) ** 2, 0) / n) || 1,
-    Math.sqrt(feats.reduce((s, f) => s + (f[1] - mean[1]) ** 2, 0) / n) || 1,
-  ];
-  const z = feats.map((f): [number, number] => [(f[0] - mean[0]) / sd[0], (f[1] - mean[1]) / sd[1]]);
-  const base = y.reduce((s, v) => s + v, 0) / n;
-  let w: [number, number, number] = [Math.log(base / (1 - base)), 0, 0];
+  const dim = feats[0]!.length;
+  const mean = new Array<number>(dim).fill(0);
+  for (const f of feats) for (let j = 0; j < dim; j++) mean[j] = mean[j]! + f[j]! / n;
+  const sd = new Array<number>(dim).fill(0);
+  for (const f of feats) for (let j = 0; j < dim; j++) sd[j] = sd[j]! + (f[j]! - mean[j]!) ** 2 / n;
+  for (let j = 0; j < dim; j++) sd[j] = Math.sqrt(sd[j]!) || 1;
+  const z = feats.map((f) => f.map((v, j) => (v - mean[j]!) / sd[j]!));
+  let w = new Array<number>(dim + 1).fill(0);
+  w[0] = Math.log(base / (1 - base));
   const lr = 0.2;
   for (let step = 0; step < 1500; step++) {
-    const g: [number, number, number] = [0, 0, 0];
+    const g = new Array<number>(dim + 1).fill(0);
     for (let i = 0; i < n; i++) {
-      const pred = sigmoid(w[0] + w[1] * z[i]![0] + w[2] * z[i]![1]);
-      const d = pred - y[i]!;
-      g[0] += d;
-      g[1] += d * z[i]![0];
-      g[2] += d * z[i]![1];
+      let s = w[0]!;
+      for (let j = 0; j < dim; j++) s += w[j + 1]! * z[i]![j]!;
+      const d = sigmoid(s) - y[i]!;
+      g[0] = g[0]! + d;
+      for (let j = 0; j < dim; j++) g[j + 1] = g[j + 1]! + d * z[i]![j]!;
     }
-    w = [w[0] - (lr * g[0]) / n, w[1] - (lr * g[1]) / n, w[2] - (lr * g[2]) / n];
+    const next = w.map((wj, j) => wj - lr * (g[j]! / n + (j === 0 ? 0 : (ODDS_L2 * wj) / n)));
+    w = next;
   }
-  return { weights: w, mean, sd, base_rate: round4(base) };
+  return { weights: w, mean, sd, base_rate: round4(base), cat_rate: rates };
 }
 
 /** The fitted propensity that a protocol with this record already carries a token. */
 export function launchOdds(fit: OddsFit, p: SnapshotProtocol, asOf: string): number {
-  const f = oddsFeatures(p, asOf);
-  const z0 = (f[0] - fit.mean[0]) / fit.sd[0];
-  const z1 = (f[1] - fit.mean[1]) / fit.sd[1];
-  return sigmoid(fit.weights[0] + fit.weights[1] * z0 + fit.weights[2] * z1);
+  const f = oddsFeatures(p, asOf, fit.cat_rate, fit.base_rate);
+  let s = fit.weights[0]!;
+  for (let j = 0; j < f.length; j++) s += fit.weights[j + 1]! * ((f[j]! - fit.mean[j]!) / fit.sd[j]!);
+  return sigmoid(s);
 }
 
 /** Held-out calibration of the propensity fit, against guessing the census rate for everyone. */
