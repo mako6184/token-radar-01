@@ -1,4 +1,4 @@
-// Token Launch Radar — entry program (Node 22, standard library only), model "radar-2".
+// Token Launch Radar — entry program (Node 22, standard library only), model "radar-3".
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the peer
 // valuation line and the launch-propensity model on the snapshot itself (lib/model.ts), writes

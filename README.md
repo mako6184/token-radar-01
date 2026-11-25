@@ -9,8 +9,8 @@ A token launch radar built from the sealed DefiLlama snapshot: every protocol th
 ## How it works
 
 - **Census** — the watchlist rule applied at every size: 198 pre-token protocols, with the full official watchlist (40) covered.
-- **Implied value** — nearest-peer comps: the 24 tokenised peers nearest in log TVL (category match halves the distance), a kernel-weighted geometric mean of their market-cap/TVL multiples, winsorised and adjusted for 7-day TVL growth and protocol age. Validated with 5-fold cross-validation on held-out peers (median error ×3.2).
-- **Launch propensity** — a logistic model over the whole snapshot, cross-validated (Brier 0.233 vs 0.248 base rate), shown as context, not a promise.
+- **Implied value** — nearest-peer comps: the 24 tokenised peers nearest in log TVL (a fixed penalty when the category differs), far-out comp multiples trimmed against the selected set's own median, and the value read off the comps' market caps scaled by the TVL ratio to the power 0.92, adjusted for 7-day TVL growth and protocol age. Validated with 5-fold cross-validation on held-out peers (median error ×3.0, 28% within ×2).
+- **Launch propensity** — a logistic model over the whole snapshot on size, age, chain count, momentum and the category's own token rate, cross-validated (Brier 0.204 vs 0.248 base rate), shown as context, not a promise.
 - **Farm plans** — per-protocol steps generated from category, chain and size; every step states its cost and time, and each row carries a season cash cost and a verdict.
 
 ## Run it
